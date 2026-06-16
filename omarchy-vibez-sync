@@ -25,7 +25,44 @@ send_notification() {
   fi
 }
 
+is_light_color() {
+  local hex="${1#\#}"
+  local r_hex="${hex:0:2}"
+  local g_hex="${hex:2:2}"
+  local b_hex="${hex:4:2}"
+  local r=$((16#$r_hex))
+  local g=$((16#$g_hex))
+  local b=$((16#$b_hex))
+  local l=$(( (2126 * r + 7152 * g + 722 * b) / 255 ))
+  if (( l > 5000 )); then
+    return 0
+  else
+    return 1
+  fi
+}
+
+check_dependencies() {
+  local missing=()
+  if ! command -v jq >/dev/null 2>&1; then
+    missing+=("jq")
+  fi
+  if ! command -v omarchy >/dev/null 2>&1; then
+    missing+=("omarchy")
+  fi
+  if (( ${#missing[@]} > 0 )); then
+    echo "[ERROR] Missing required dependencies: ${missing[*]}" >&2
+    echo "Please install them before running omarchy-vibez-sync." >&2
+    exit 1
+  fi
+}
+
 do_sync() {
+  check_dependencies
+
+  if ! command -v vibez >/dev/null 2>&1; then
+    echo "[WARNING] 'vibez' executable not found in PATH. Make sure Vibez is installed." >&2
+  fi
+
   local colors_file="$HOME/.config/omarchy/current/theme/colors.toml"
   if [[ ! -f "$colors_file" ]]; then
     echo "[ERROR] Omarchy colors.toml not found at $colors_file"
@@ -46,17 +83,34 @@ do_sync() {
   local c8=$(grep "^color8 =" "$colors_file" | cut -d"\"" -f2)
 
   [[ -n "$bg" ]] || bg="#eff1f5"
-  [[ -n "$fg" ]] || fg="#4c4f69"
-  [[ -n "$accent" ]] || accent="#1e66f5"
-  [[ -n "$c0" ]] || c0="#bcc0cc"
-  [[ -n "$c1" ]] || c1="#d20f39"
-  [[ -n "$c2" ]] || c2="#40a02b"
-  [[ -n "$c3" ]] || c3="#df8e1d"
-  [[ -n "$c4" ]] || c4="#1e66f5"
-  [[ -n "$c5" ]] || c5="#ea76cb"
-  [[ -n "$c6" ]] || c6="#179299"
-  [[ -n "$c7" ]] || c7="#5c5f77"
-  [[ -n "$c8" ]] || c8="#acb0be"
+
+  if is_light_color "$bg"; then
+    # Light theme fallbacks (Catppuccin Latte)
+    [[ -n "$fg" ]] || fg="#4c4f69"
+    [[ -n "$accent" ]] || accent="#1e66f5"
+    [[ -n "$c0" ]] || c0="#bcc0cc"
+    [[ -n "$c1" ]] || c1="#d20f39"
+    [[ -n "$c2" ]] || c2="#40a02b"
+    [[ -n "$c3" ]] || c3="#df8e1d"
+    [[ -n "$c4" ]] || c4="#1e66f5"
+    [[ -n "$c5" ]] || c5="#ea76cb"
+    [[ -n "$c6" ]] || c6="#179299"
+    [[ -n "$c7" ]] || c7="#5c5f77"
+    [[ -n "$c8" ]] || c8="#acb0be"
+  else
+    # Dark theme fallbacks (Catppuccin Macchiato)
+    [[ -n "$fg" ]] || fg="#cdd6f4"
+    [[ -n "$accent" ]] || accent="#cba6f7"
+    [[ -n "$c0" ]] || c0="#11111b"
+    [[ -n "$c1" ]] || c1="#f38ba8"
+    [[ -n "$c2" ]] || c2="#a6e3a1"
+    [[ -n "$c3" ]] || c3="#f9e2af"
+    [[ -n "$c4" ]] || c4="#89b4fa"
+    [[ -n "$c5" ]] || c5="#f5c2e7"
+    [[ -n "$c6" ]] || c6="#94e2d5"
+    [[ -n "$c7" ]] || c7="#6c7086"
+    [[ -n "$c8" ]] || c8="#313244"
+  fi
 
   local vibez_themes="$HOME/.config/vibez/themes"
   mkdir -p "$vibez_themes"
@@ -96,16 +150,27 @@ do_sync() {
       "mode_chip_fg": $bg
     }' > "$vibez_themes/omarchy-vibez-auto.json"
 
-  if [[ -f "$VIBEZ_CONFIG" ]]; then
+  local config_dir=$(dirname "$VIBEZ_CONFIG")
+  mkdir -p "$config_dir"
+  if [[ ! -f "$VIBEZ_CONFIG" ]]; then
+    echo '{"theme": "omarchy-vibez-auto"}' > "$VIBEZ_CONFIG"
+    echo "[omarchy-vibez-sync] Initialized Vibez config.json with auto theme."
+  else
     jq '.theme = "omarchy-vibez-auto"' "$VIBEZ_CONFIG" > "${VIBEZ_CONFIG}.tmp" && mv "${VIBEZ_CONFIG}.tmp" "$VIBEZ_CONFIG"
   fi
 
   local active_theme=$(omarchy theme current || echo "system")
-  send_notification "Vibez theme updated to match $active_theme!"
+  local running_msg=""
+  if pgrep -x "vibez" >/dev/null 2>&1; then
+    running_msg=" (Restart Vibez to apply)"
+    echo "[omarchy-vibez-sync] Warning: Vibez is currently running. Please restart it to apply the new theme."
+  fi
+  send_notification "Vibez theme updated to match $active_theme!$running_msg"
   echo "[omarchy-vibez-sync] Theme synchronized successfully."
 }
 
 do_install() {
+  check_dependencies
   local hook_dir=$(dirname "$HOOK_FILE")
   mkdir -p "$hook_dir"
 
@@ -132,6 +197,7 @@ do_install() {
 }
 
 do_uninstall() {
+  check_dependencies
   if [[ -f "$HOOK_FILE" ]]; then
     sed -i '/omarchy-vibez-sync sync/d' "$HOOK_FILE"
     sed -i '/# Sync Vibez theme/d' "$HOOK_FILE"
@@ -139,9 +205,18 @@ do_uninstall() {
   else
     echo "[omarchy-vibez-sync] Hook file not found, nothing to do."
   fi
+
+  if [[ -f "$VIBEZ_CONFIG" ]]; then
+    local current_theme=$(jq -r '.theme' "$VIBEZ_CONFIG" 2>/dev/null)
+    if [[ "$current_theme" == "omarchy-vibez-auto" ]]; then
+      jq '.theme = "default"' "$VIBEZ_CONFIG" > "${VIBEZ_CONFIG}.tmp" && mv "${VIBEZ_CONFIG}.tmp" "$VIBEZ_CONFIG"
+      echo "[omarchy-vibez-sync] Restored Vibez theme to 'default'."
+    fi
+  fi
 }
 
 do_status() {
+  check_dependencies
   echo "--- omarchy-vibez-sync status ---"
   if [[ -f "$HOOK_FILE" ]] && grep -q "omarchy-vibez-sync sync" "$HOOK_FILE"; then
     echo "Hook status: Installed and active"
