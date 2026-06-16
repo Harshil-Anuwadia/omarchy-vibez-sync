@@ -1,0 +1,186 @@
+#!/bin/bash
+# omarchy-vibez-sync: CLI tool to integrate Vibez themes with Omarchy system themes.
+
+set -e
+
+HOOK_FILE="$HOME/.config/omarchy/hooks/theme-set"
+VIBEZ_CONFIG="$HOME/.config/vibez/config.json"
+
+show_help() {
+  echo "Usage: omarchy-vibez-sync <command>"
+  echo ""
+  echo "Commands:"
+  echo "  install    Install the hook to follow Omarchy theme changes"
+  echo "  uninstall  Remove the hook and disable syncing"
+  echo "  sync       Manually sync Vibez colors to the current Omarchy theme"
+  echo "  status     Check integration status"
+  echo "  help       Show this help message"
+}
+
+send_notification() {
+  local title="Vibez Theme Sync"
+  local message="$1"
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -t 4000 -i media-playback-start "$title" "$message" || true
+  fi
+}
+
+do_sync() {
+  local colors_file="$HOME/.config/omarchy/current/theme/colors.toml"
+  if [[ ! -f "$colors_file" ]]; then
+    echo "[ERROR] Omarchy colors.toml not found at $colors_file"
+    exit 1
+  fi
+
+  local bg=$(grep "^background =" "$colors_file" | cut -d"\"" -f2)
+  local fg=$(grep "^foreground =" "$colors_file" | cut -d"\"" -f2)
+  local accent=$(grep "^accent =" "$colors_file" | cut -d"\"" -f2)
+  local c0=$(grep "^color0 =" "$colors_file" | cut -d"\"" -f2)
+  local c1=$(grep "^color1 =" "$colors_file" | cut -d"\"" -f2)
+  local c2=$(grep "^color2 =" "$colors_file" | cut -d"\"" -f2)
+  local c3=$(grep "^color3 =" "$colors_file" | cut -d"\"" -f2)
+  local c4=$(grep "^color4 =" "$colors_file" | cut -d"\"" -f2)
+  local c5=$(grep "^color5 =" "$colors_file" | cut -d"\"" -f2)
+  local c6=$(grep "^color6 =" "$colors_file" | cut -d"\"" -f2)
+  local c7=$(grep "^color7 =" "$colors_file" | cut -d"\"" -f2)
+  local c8=$(grep "^color8 =" "$colors_file" | cut -d"\"" -f2)
+
+  [[ -n "$bg" ]] || bg="#eff1f5"
+  [[ -n "$fg" ]] || fg="#4c4f69"
+  [[ -n "$accent" ]] || accent="#1e66f5"
+  [[ -n "$c0" ]] || c0="#bcc0cc"
+  [[ -n "$c1" ]] || c1="#d20f39"
+  [[ -n "$c2" ]] || c2="#40a02b"
+  [[ -n "$c3" ]] || c3="#df8e1d"
+  [[ -n "$c4" ]] || c4="#1e66f5"
+  [[ -n "$c5" ]] || c5="#ea76cb"
+  [[ -n "$c6" ]] || c6="#179299"
+  [[ -n "$c7" ]] || c7="#5c5f77"
+  [[ -n "$c8" ]] || c8="#acb0be"
+
+  local vibez_themes="$HOME/.config/vibez/themes"
+  mkdir -p "$vibez_themes"
+
+  jq -n \
+    --arg bg "$bg" \
+    --arg fg "$fg" \
+    --arg accent "$accent" \
+    --arg c0 "$c0" \
+    --arg c1 "$c1" \
+    --arg c2 "$c2" \
+    --arg c3 "$c3" \
+    --arg c4 "$c4" \
+    --arg c5 "$c5" \
+    --arg c6 "$c6" \
+    --arg c7 "$c7" \
+    --arg c8 "$c8" \
+    '{
+      "primary": $accent,
+      "secondary": $c4,
+      "muted": $c7,
+      "error": $c1,
+      "fg": $fg,
+      "subtle": $c0,
+      "bg": $bg,
+      "love": $c5,
+      "active": $c2,
+      "progress": $c6,
+      "surface": $c8,
+      "accent": $c6,
+      "accent_warm": $c3,
+      "bear": $c3,
+      "glow_palette": [ $bg, $c0, $c8, $accent ],
+      "mode_normal_bg": $c2,
+      "mode_search_bg": $c4,
+      "mode_command_bg": $c3,
+      "mode_chip_fg": $bg
+    }' > "$vibez_themes/omarchy-vibez-auto.json"
+
+  if [[ -f "$VIBEZ_CONFIG" ]]; then
+    jq '.theme = "omarchy-vibez-auto"' "$VIBEZ_CONFIG" > "${VIBEZ_CONFIG}.tmp" && mv "${VIBEZ_CONFIG}.tmp" "$VIBEZ_CONFIG"
+  fi
+
+  local active_theme=$(omarchy theme current || echo "system")
+  send_notification "Vibez theme updated to match $active_theme!"
+  echo "[omarchy-vibez-sync] Theme synchronized successfully."
+}
+
+do_install() {
+  local hook_dir=$(dirname "$HOOK_FILE")
+  mkdir -p "$hook_dir"
+
+  if [[ ! -f "$HOOK_FILE" ]]; then
+    echo "#!/bin/bash" > "$HOOK_FILE"
+    echo "# Hook called by Omarchy on theme set" >> "$HOOK_FILE"
+    echo "" >> "$HOOK_FILE"
+  fi
+
+  if grep -q "omarchy-vibez-sync sync" "$HOOK_FILE"; then
+    echo "[omarchy-vibez-sync] Already installed in hook."
+  else
+    if grep -q "echo \"\[theme-set hook\] DONE" "$HOOK_FILE"; then
+      sed -i '/echo "\[theme-set hook\] DONE/i\omarchy-vibez-sync sync' "$HOOK_FILE"
+    else
+      echo -e "\n# Sync Vibez theme\nomarchy-vibez-sync sync" >> "$HOOK_FILE"
+    fi
+    echo "[omarchy-vibez-sync] Hook added to $HOOK_FILE"
+  fi
+
+  chmod +x "$HOOK_FILE"
+  do_sync
+  echo "[omarchy-vibez-sync] Installation complete!"
+}
+
+do_uninstall() {
+  if [[ -f "$HOOK_FILE" ]]; then
+    sed -i '/omarchy-vibez-sync sync/d' "$HOOK_FILE"
+    sed -i '/# Sync Vibez theme/d' "$HOOK_FILE"
+    echo "[omarchy-vibez-sync] Hook removed from $HOOK_FILE"
+  else
+    echo "[omarchy-vibez-sync] Hook file not found, nothing to do."
+  fi
+}
+
+do_status() {
+  echo "--- omarchy-vibez-sync status ---"
+  if [[ -f "$HOOK_FILE" ]] && grep -q "omarchy-vibez-sync sync" "$HOOK_FILE"; then
+    echo "Hook status: Installed and active"
+  else
+    echo "Hook status: Not installed"
+  fi
+
+  if [[ -f "$VIBEZ_CONFIG" ]]; then
+    local current_theme=$(jq -r '.theme' "$VIBEZ_CONFIG" 2>/dev/null)
+    echo "Vibez theme setting: $current_theme"
+  else
+    echo "Vibez config: Not found at $VIBEZ_CONFIG"
+  fi
+}
+
+# Parse subcommand
+case "$1" in
+  install)
+    do_install
+    ;;
+  uninstall)
+    do_uninstall
+    ;;
+  sync)
+    do_sync
+    ;;
+  status)
+    do_status
+    ;;
+  help|--help|-h)
+    show_help
+    ;;
+  *)
+    if [[ -z "$1" ]]; then
+      show_help
+    else
+      echo "[ERROR] Unknown command: $1"
+      show_help
+      exit 1
+    fi
+    ;;
+esac
